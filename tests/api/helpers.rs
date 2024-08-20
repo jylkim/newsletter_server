@@ -1,9 +1,9 @@
-use std::sync::Once;
-use sqlx::{Connection, Executor, PgConnection, PgPool};
-use uuid::Uuid;
-use newsletter_server::startup::{Application, get_connection_pool};
-use newsletter_server::telemetry::{get_subscriber, init_subscriber};
 use newsletter_server::configuration::{get_configuration, DatabaseSettings};
+use newsletter_server::startup::{get_connection_pool, Application};
+use newsletter_server::telemetry::{get_subscriber, init_subscriber};
+use sqlx::{Connection, Executor, PgConnection, PgPool};
+use std::sync::Once;
+use uuid::Uuid;
 use wiremock::MockServer;
 
 static TRACING: Once = Once::new();
@@ -31,10 +31,16 @@ impl TestApp {
             .expect("Failed to execute request.")
     }
 
-    pub fn get_confirmation_links(
-        &self,
-        email_request: &wiremock::Request
-    ) -> ConfirmationLinks {
+    pub async fn post_newsletters(&self, body: serde_json::Value) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(&format!("{}/newsletters", &self.address))
+            .json(&body)
+            .send()
+            .await
+            .expect("Failed to execute request.")
+    }
+
+    pub fn get_confirmation_links(&self, email_request: &wiremock::Request) -> ConfirmationLinks {
         let body: serde_json::Value = serde_json::from_slice(&email_request.body).unwrap();
         let get_link = |s: &str| {
             let links: Vec<_> = linkify::LinkFinder::new()
@@ -50,10 +56,7 @@ impl TestApp {
         };
         let html = get_link(&body["HtmlBody"].as_str().unwrap());
         let plain_text = get_link(&body["TextBody"].as_str().unwrap());
-        ConfirmationLinks {
-            html,
-            plain_text,
-        }
+        ConfirmationLinks { html, plain_text }
     }
 }
 
@@ -92,7 +95,6 @@ pub async fn spawn_app() -> TestApp {
         db_pool: get_connection_pool(&configuration.database),
         email_server,
     }
-
 }
 
 async fn configure_database(config: &DatabaseSettings) -> PgPool {
