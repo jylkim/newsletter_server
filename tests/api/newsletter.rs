@@ -1,4 +1,4 @@
-use crate::helpers::{spawn_app, ConfirmationLinks, TestApp};
+use crate::helpers::{assert_is_redirect_to, spawn_app, ConfirmationLinks, TestApp};
 use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -7,19 +7,28 @@ async fn newsletters_are_not_delivered_to_unconfirmed_subscribers() {
     // arrange
     let app = spawn_app().await;
     create_unconfirmed_subscriber(&app).await;
+    app.test_user.login(&app).await;
 
-    // act
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&app.email_server)
+        .await;
+
+    // act (post newsletter)
     let newsletter_request_body = serde_json::json!({
         "title": "Newsletter title",
-        "content": {
-            "text": "Newsletter body as plain text",
-            "html": "<p>Newsletter body as HTML</p>",
-        }
+        "text_content": "Newsletter body as plain text",
+        "html_content": "<p>Newsletter body as HTML</p>",
     });
-    let response = app.post_newsletters(newsletter_request_body).await;
+    let response = app.post_publish_newsletter(&newsletter_request_body).await;
+    assert_is_redirect_to(&response, "/admin/newsletters");
 
-    // assert
-    assert_eq!(response.status().as_u16(), 200);
+    // act (follow redirect)
+    let html_page = app.get_publish_newsletter_html().await;
+    assert!(html_page.contains("<p><i>The newsletter issue has been published!</i></p>"));
+
+    // mock server asserts there was no requests during drop
 }
 
 #[tokio::test]
@@ -27,6 +36,7 @@ async fn newsletters_are_delivered_to_confirmed_subscribers() {
     // arrange
     let app = spawn_app().await;
     create_confirmed_subscriber(&app).await;
+    app.test_user.login(&app).await;
 
     Mock::given(path("/email"))
         .and(method("POST"))
@@ -38,15 +48,17 @@ async fn newsletters_are_delivered_to_confirmed_subscribers() {
     // act
     let newsletter_request_body = serde_json::json!({
         "title": "Newsletter title",
-        "content": {
-            "text": "Newsletter body as plain text",
-            "html": "<p>Newsletter body as HTML</p>",
-        }
+        "text_content": "Newsletter body as plain text",
+        "html_content": "<p>Newsletter body as HTML</p>",
     });
-    let response = app.post_newsletters(newsletter_request_body).await;
+    let response = app.post_publish_newsletter(&newsletter_request_body).await;
+    assert_is_redirect_to(&response, "/admin/newsletters");
 
-    // assert
-    assert_eq!(response.status().as_u16(), 200);
+    // act (follow redirect)
+    let html_page = app.get_publish_newsletter_html().await;
+    assert!(html_page.contains("<p><i>The newsletter issue has been published!</i></p>"));
+
+    // mock server asserts there was a request during drop
 }
 
 async fn create_unconfirmed_subscriber(app: &TestApp) -> ConfirmationLinks {
@@ -86,13 +98,12 @@ async fn create_confirmed_subscriber(app: &TestApp) {
 async fn newsletters_returns_400_for_invalid_data() {
     // arrange
     let app = spawn_app().await;
+    app.test_user.login(&app).await;
     let test_cases = vec![
         (
             serde_json::json!({
-                "content": {
-                    "text": "Newsletter body as plain text",
-                    "html": "<p>Newsletter body as HTML</p>",
-                }
+                "text_content": "Newsletter body as plain text",
+                "html_content": "<p>Newsletter body as HTML</p>",
             }),
             "Missing title",
         ),
@@ -104,7 +115,7 @@ async fn newsletters_returns_400_for_invalid_data() {
 
     for (invalid_body, error_message) in test_cases {
         // act
-        let response = app.post_newsletters(invalid_body).await;
+        let response = app.post_publish_newsletter(&invalid_body).await;
 
         // assert
         assert_eq!(
@@ -114,4 +125,34 @@ async fn newsletters_returns_400_for_invalid_data() {
             error_message
         );
     }
+}
+
+#[tokio::test]
+async fn you_must_be_logged_in_to_publish_a_newsletter() {
+    // arrange
+    let app = spawn_app().await;
+
+    // act
+    let response = app
+        .post_publish_newsletter(&serde_json::json!({
+            "title": "Newsletter title",
+            "text_content": "Newsletter body as plain text",
+            "html_content": "<p>Newsletter body as HTML</p>",
+        }))
+        .await;
+
+    // assert
+    assert_is_redirect_to(&response, "/login");
+}
+
+#[tokio::test]
+async fn you_must_logged_in_to_see_the_newsletter_form() {
+    // arrange
+    let app = spawn_app().await;
+
+    // act
+    let response = app.get_publish_newsletter().await;
+
+    // assert
+    assert_is_redirect_to(&response, "/login");
 }
